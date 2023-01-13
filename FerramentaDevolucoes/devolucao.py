@@ -18,17 +18,26 @@ class relatorio():
         self.relacao = DataFrame(read_excel(f'C:/Users/GustavoDutra/Desktop/Teste/{arquivo}', usecols=['Codigo', 'Quant', 'Aplicação']))
         self.fornecedor = str(read_excel(f'C:/Users/GustavoDutra/Desktop/Teste/{arquivo}', usecols=['Fornecedor']))
         self.devolucao = DataFrame()
-        self.espelho_devolucao = DataFrame()
+        self.EspelhoDevolucao = DataFrame()
+        self.MontaDevCentral()
+
+# TO DO - CONSULTAR DADOS TRIBUTÁRIOS DA COMPRA PARA GERAR ESPELHO DE DEVOLUÇÃO
+    def MontaEspelhoDev(self):
+        for produto, nota in self.devolucao:
+            queryInfoTributos = '''... Consulta SQL Aqui ...'''
+            dfInfoTributos = read_sql_query(queryInfoTributos, conn)
+            self.EspelhoDevolucao = 1 # Merge devolucao + dfInfoTributos
 
 # No caso das notas de entrada serem do depósito central, é utilizado o método MontaDev_Central.
-# Ele tem menor desempenho por ler menos notas de entrada
+# Ele tem maior desempenho por ler menos notas de entrada
 
-    def MontaDev_Central(self):
-        d = date.today()
-        MinDate = d.replace(day=1) - relativedelta(months=6)
-        for i in self.relacao.iterrows():
-            seqitem = {i[1][0]}
-            query = f'''SELECT
+    def MontaDevCentral(self):
+        hoje = date.today()
+        MinDate = hoje.replace(day=1) - relativedelta(months=6)
+        for index, produto in self.relacao.iterrows():
+            seqitem = produto['Codigo']
+            qtdDevolucao = int(produto['Quant'])
+            queryListaNotas = f'''SELECT
                             a.dtaentrada,
                             a.seqproduto,
                             a.numerodf,
@@ -37,40 +46,52 @@ class relatorio():
                             COALESCE(a.qtddevolvida,0) as qtddevolvida,
                             (a.quantidade - COALESCE(a.qtddevolvida, 0)) as saldo_devolucao
                             
-                                            FROM ~DBNAME.DB_TABLE~ A
+                                            FROM ~DBNAME.DBTABLE~ A
                                             
                                             WHERE a.codgeraloper = 1
                                             AND a.seqproduto = {seqitem}
                                             AND a.nroempresa = 77
+                                            AND a.dtaentrada > TO_DATE(SYSDATE) - 180
+                                            AND (a.quantidade - COALESCE(a.qtddevolvida, 0)) > 0
                                             
                             ORDER BY a.dtaentrada asc'''
-            tmp_saldo_notas = read_sql_query(query, conn)
-            if tmp_saldo_notas.shape[0] == 0:
+            dfTempSaldoNotas = DataFrame(read_sql_query(queryListaNotas, conn))
+            if dfTempSaldoNotas.shape[0] == 0:
                 print('Não há entradas nesta filial para este produto')
             else:
-                while qtd > 0:
-                    for index, linha in tmp_saldo_notas[tmp_saldo_notas['DTAENTRADA'] > f'{MinDate}'].iterrows():
-                        if (linha['SALDO_DEVOLUCAO'] >= qtd):
-                            tmp_devolucao = DataFrame(data = (str(linha['SEQPRODUTO']), str(linha['NUMERODF']), str(qtd)), columns = ['seqproduto', 'numerodocto', 'qtd_devolucao'])
-                            self.devolucao = concat([tmp_devolucao, self.devolucao])
-                            qtd = qtd - linha['SALDO_DEVOLUCAO']
+                while qtdDevolucao > 0:
+                    for index, nota in dfTempSaldoNotas.iterrows():
+                        if (nota['SALDO_DEVOLUCAO'] >= qtdDevolucao and qtdDevolucao > 0):
+                            dfTempDevolucao = DataFrame(data = [(str(nota['SEQPRODUTO']), str(nota['NROEMPRESA']), str(nota['NUMERODF']) , str(qtdDevolucao))], columns = ['seqproduto', 'nroempresa', 'numerodocto', 'qtd_devolucao'])
+                            self.devolucao = concat([dfTempDevolucao, self.devolucao])
+                            qtdDevolucao = qtdDevolucao - nota['SALDO_DEVOLUCAO']
                             break
-                        elif (linha['SALDO_DEVOLUCAO']) < qtd:
-                            tmp_devolucao = DataFrame(data = (str(linha['SEQPRODUTO']), str(linha['NUMERODF']) , str(linha['SALDO_DEVOLUCAO'])), columns = ['seqproduto', 'numerodocto', 'qtd_devolucao'])
-                            qtd = qtd - linha['SALDO_DEVOLUCAO']
+                        else:
+                            while qtdDevolucao > 0:
+                                for index, nota in dfTempSaldoNotas.iterrows():
+                                    if nota['SALDO_DEVOLUCAO'] <= qtdDevolucao:
+                                        dfTempDevolucao = DataFrame(data = [(str(nota['SEQPRODUTO']), str(nota['NROEMPRESA']), str(nota['NUMERODF']) , str(nota['SALDO_DEVOLUCAO']))], columns = ['seqproduto', 'nroempresa', 'numerodocto', 'qtd_devolucao'])
+                                        self.devolucao = concat([dfTempDevolucao, self.devolucao])
+                                        qtdDevolucao = qtdDevolucao - nota['SALDO_DEVOLUCAO']
+                                    else:
+                                        dfTempDevolucao = DataFrame(data = [(str(nota['SEQPRODUTO']), str(nota['NROEMPRESA']), str(nota['NUMERODF']) , str(qtdDevolucao))], columns = ['seqproduto', 'nroempresa', 'numerodocto', 'qtd_devolucao'])
+                                        self.devolucao = concat([dfTempDevolucao, self.devolucao])
+                                        qtdDevolucao = qtdDevolucao - nota['SALDO_DEVOLUCAO']
+                                        break
 
-# getEstqTroca Em desenvolvimento -- Futuramente será parte do método MontaDev_Filiais ...
+
+# TO DO - Futuramente a função getEstqTroca será parte do método MontaDevFiliais ...
     def getEstqTroca(self):
-        for i in self.relacao.iterrows():
-            troca_total = (read_sql_query(f"SELECT SUM(ESTQTROCA) as ESTQ FROM ~DBNAME.DB_TABLE~ WHERE SEQPRODUTO = '{i[1][0]}' AND NROEMPRESA IN ({', '.join(lojas)})", conn))['ESTQ'][0]
-            qtd_devolucao = int(i[1][1])
+        for produto in self.relacao.iterrows():
+            TrocaTotal = (read_sql_query(f"SELECT SUM(ESTQTROCA) as ESTQ FROM ~DBNAME.DBTABLE~ WHERE SEQPRODUTO = '{i[1][0]}' AND NROEMPRESA IN ({', '.join(lojas)})", conn))['ESTQ'][0]
+            qtdDevolucao = int(produto[1][1])
             for loja in lojas:
-                estq_loja = {}
-                q_troca_loja = f"SELECT ESTQTROCA AS ESTQ FROM ~DBNAME.DB_TABLE~ A WHERE A.SEQPRODUTO = '{i[1][0]}' AND A.NROEMPRESA = {loja}"
-                estq = read_sql_query(q_troca_loja, conn)
-                estq_loja
+                EstqLoja = {}
+                queryTrocaLoja = f"SELECT ESTQTROCA AS ESTQ FROM ~DBNAME.DBTABLE~ A WHERE A.SEQPRODUTO = '{i[1][0]}' AND A.NROEMPRESA = {loja}"
+                estq = read_sql_query(queryTrocaLoja, conn)
+                EstqLoja
 
 
 # Declarando e chamando para testes...
-craft = relatorio('011122_FORNECEDOR') # relatorio emitido pela equipe operacional DATAEMISSAO_NOMEFORNECEDOR
-craft.getEstqTroca()
+craft = relatorio('011122_CRAFT')
+print(craft.devolucao)
